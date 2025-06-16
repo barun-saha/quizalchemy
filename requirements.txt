@@ -1,0 +1,11 @@
+google-adk
+litellm~=1.72.6
+markitdown[pdf,docx]
+json_repair~=0.46.2
+streamlit
+python-dotenv~=1.1.0
+protobuf~=6.31.1
+pydantic~=2.11.7
+
+
+sqlmodel~=0.0.24
