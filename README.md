@@ -22,7 +22,7 @@ It uses three ADK agents:
 1. Clone this repository:
    ```bash
    git clone https://github.com/barun-saha/quizalchemy
-   cd quizzifai
+   cd quizalchemy
    ```
 2. Install dependencies:
    ```bash
