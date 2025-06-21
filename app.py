@@ -10,7 +10,8 @@ import random
 import re
 import sqlite3
 import warnings
-from typing import List, Optional
+import asyncio
+from typing import Optional
 
 import litellm
 import streamlit as st
@@ -30,13 +31,14 @@ MODEL_GEMINI = 'gemini/gemini-2.0-flash-lite'
 DIFFICULTY_LEVELS = ['easy', 'medium', 'hard']
 
 QUESTION_BANK_PROMPT = '''
-You are an expert tutor. Given the text below, create a question bank having 10--20 questions
+You are an expert tutor. Given the text below, create a question bank having 10--30 questions
 and their answers. The questions provide multiple choices where only one choice is correct.
-The `answer_key` field will contain the list index (0-based) of the correct answer in the `choices` 
+The `answer_key` field will contain the list index (0-based) of the correct answer in the `choices`
 list. In addition, create questions with three levels of difficulties: easy, medium, and hard.
 About 40% of the questions should be easy, 30% medium, and 30% hard.
+Create the question-answer pairs in a way that promotes critical thinking among the students.
 IMPORTANT: The questions and answers must be based solely and only on the provided text
-and must be factually correct. Create them in a way that promotes critical thinking.
+and must be factually correct.
 Also, create the questions and answers in the same language as the input text.
 
 An illustrative example:
@@ -87,12 +89,13 @@ class QuestionAnswer(BaseModel):
     def from_sql_row(cls, row):
         """Convert SQLite row to Pydantic model."""
         return cls(
-            id=row[0], # The DB's auto-generated primary key
+            id=row[0],  # The DB's auto-generated primary key
             question=row[1],
             choices=json.loads(row[2]),
             answer_key=row[3],
             difficulty=row[4]
         )
+
 
 class QuestionBank(BaseModel):
     """
@@ -107,8 +110,8 @@ class QuestionBank(BaseModel):
         for question in self.questions:
             cursor.execute(
                 '''
-                    INSERT INTO questions (question, choices, answer_key, difficulty)
-                    VALUES (?, ?, ?, ?)
+                INSERT INTO questions (question, choices, answer_key, difficulty)
+                VALUES (?, ?, ?, ?)
                 ''',
                 question.to_sql_tuple()
             )
@@ -128,11 +131,11 @@ class QuestionBank(BaseModel):
         print(f'Loaded {len(questions)} questions from DB.')
         return cls(questions=questions)
 
-    def filter_by_difficulty(self, difficulty: str) -> List[QuestionAnswer]:
+    def filter_by_difficulty(self, difficulty: str) -> list[QuestionAnswer]:
         """Filter questions by difficulty."""
         return [q for q in self.questions if q.difficulty == difficulty]
 
-    def get_random_questions(self, num_questions: int = 5) -> List[QuestionAnswer]:
+    def get_random_questions(self, num_questions: int = 5) -> list[QuestionAnswer]:
         """Get a random selection of questions."""
         return random.sample(self.questions, min(num_questions, len(self.questions)))
 
@@ -140,13 +143,12 @@ class QuestionBank(BaseModel):
             self,
             difficulty: str,
             num_questions: int = 5
-    ) -> List[QuestionAnswer]:
+    ) -> list[QuestionAnswer]:
         """Get random questions filtered by difficulty."""
         filtered = self.filter_by_difficulty(difficulty)
         return random.sample(filtered, min(num_questions, len(filtered)))
 
 
-# Tool to extract text from various file formats as Markdown
 def extract_as_markdown(
         url_or_file_path: str,
         scrub_links: bool = True,
@@ -162,7 +164,7 @@ def extract_as_markdown(
     Args:
         url_or_file_path: URL or Path to a .html, .pdf, .docx, or .xlsx file.
         scrub_links: Defaults to `True`, which removes all links from the extracted Markdown text.
-         Set it to `False` if you want to retain the links in the text.
+          Set it to `False` if you want to retain the links in the text.
         max_length: Limit the output to the first `max_length` characters. Defaults to 64,000.
 
     Returns:
@@ -196,10 +198,10 @@ def extract_as_markdown(
         return f'Error extracting text: {str(e)}'
 
 
-# Tool to create a question bank from a text document
 async def create_question_bank(text: str) -> QuestionBank:
     """
-    Create a question bank (i.e., a list of questions) based on the provided text.
+    Create a question bank (a list of question-answer pairs) based on the provided text.
+    Each question will have multiple choices, with one correct answer.
 
     Args:
         text: The text content from which to generate the question bank.
@@ -209,11 +211,9 @@ async def create_question_bank(text: str) -> QuestionBank:
     """
     print('🛠 create_question_bank() called')
 
-    if not text or len(text.strip()) < 50: # Basic check for meaningful text
+    if not text or len(text.strip()) < 50:  # Basic check for meaningful text
         print('CRITICAL ERROR: Input text to create_question_bank is empty or too short.')
         return QuestionBank(questions=[])
-
-    print(f'Showing the first 100 characters of input text: {text[:100]}...')
 
     response = await litellm.acompletion(
         model=MODEL_GEMINI,
@@ -221,14 +221,13 @@ async def create_question_bank(text: str) -> QuestionBank:
         response_format=QuestionBank
     )
     response = response.choices[0].message.content
-    # print(f'{response=}')
     qbank: QuestionBank = QuestionBank.model_validate_json(response)
     print(f'Number of questions from LLM Output: {len(qbank.questions)}')
 
     # Database interaction with raw SQLite3
     connection = get_db_connection()
     try:
-        qbank.save_to_db(connection) # Use the Pydantic model's save_to_db method
+        qbank.save_to_db(connection)  # Use the Pydantic model's save_to_db method
     except Exception as db_error:
         print(f'ERROR: Database save failed: {db_error}')
         raise
@@ -236,12 +235,11 @@ async def create_question_bank(text: str) -> QuestionBank:
     return qbank
 
 
-# Tool to create a quiz with a specified number of questions
 def create_quiz(
         num_items: int = 5,
         easy: float = 0.4,
         medium: float = 0.3,
-) -> List[QuestionAnswer]:
+) -> list[QuestionAnswer]:
     """
     Create a quiz with a specified number of questions.
     The `easy` and `medium` parameters determine the proportions of easy and medium questions.
@@ -257,9 +255,7 @@ def create_quiz(
         A list of selected questions for the quiz.
     """
     print('🛠 create_quiz() called')
-    # conn = get_db_connection()
 
-    # try:
     qbank = QuestionBank.load_from_db(get_db_connection())
     if not qbank or not qbank.questions:
         print('No question bank found or it contains no questions!')
@@ -286,13 +282,6 @@ def create_quiz(
     random.shuffle(quiz_questions)
 
     print(f'Generated quiz with {len(quiz_questions)} questions')
-    # print the actual questions for debugging
-    for i, q in enumerate(quiz_questions):
-        print(f'  {i+1}. Q: {q.question} (Difficulty: {q.difficulty})')
-    # except Exception as e:
-    #     print(f'Error creating quiz: {e}')
-    #     return []
-
     return quiz_questions
 
 
@@ -330,8 +319,59 @@ def create_db_tables() -> sqlite3.Connection | None:
     return connection
 
 
-def evaluate_answer(question: QuestionAnswer, answer: str):
-    pass
+def evaluate_quiz() -> list[tuple[int, str]]:
+    """
+    Evaluates all user answers for the current quiz stored in session state.
+
+    Returns:
+        A list of tuples: (0 or 1 if the answer is correct,
+        and a string with the correct answer if wrong) for each question.
+    """
+    quiz = st.session_state.get('current_quiz', [])
+    answers = st.session_state.get('user_answers', [])
+    quiz_results = []
+
+    for idx, question in enumerate(quiz):
+        try:
+            user_answer = answers[idx]
+            user_answer_index = question.choices.index(user_answer)
+            is_correct = user_answer_index == question.answer_key
+            if is_correct:
+                quiz_results.append((1, ''))
+            else:
+                correct_str = (
+                    f'The correct answer is: **{question.choices[question.answer_key]}**.'
+                )
+                quiz_results.append((0, correct_str))
+        except Exception as e:
+            quiz_results.append((0, f'Error evaluating answer for question {idx + 1}: {e}'))
+
+    # Save results in session state for later use
+    st.session_state.quiz_results = quiz_results
+
+    return quiz_results
+
+
+def display_quiz(quiz_questions: list[QuestionAnswer]) -> list[QuestionAnswer]:
+    """
+    This tool acts as a signal to the Streamlit frontend that a quiz should be
+    displayed. It returns the list of quiz questions. The actual rendering of
+    Streamlit widgets happens in the main Streamlit script, which interprets
+    the output of this tool.
+    IMPORTANT: This tool can be called as many times as needed (asked by the user)!
+
+    Args:
+        quiz_questions: A list of QuestionAnswer objects to be displayed.
+
+    Returns:
+        The same list of QuestionAnswer objects, which the Streamlit app will
+        then use to render the interactive quiz.
+    """
+    print('🛠 display_quiz() called')
+    if not quiz_questions:
+        print('No questions provided to display_quiz tool.')
+
+    return quiz_questions
 
 
 async def create_agents() -> Agent:
@@ -347,14 +387,19 @@ async def create_agents() -> Agent:
         description=(
             'Ingests data from files or websites (URLs), based on which question-answer pairs'
             ' (question bank) are generated and stored in a database. The database can be used'
-            ' by others to create quizzes.'
+            ' by other agents to create quizzes.'
         ),
         instruction=(
             'You are the data ingestion agent supporting quiz generation. Your role is two-fold.'
-            ' First, You help with data ingestion by extracting the contents of files. You can'
-            ' work with local file paths and URLs. Second, based on the ingested contents, you also'
-            ' generate a set of question-answer pairs (question bank) with different difficult'
-            ' levels and save them in a database.'
+            ' First, You help with data ingestion by extracting the contents of files using the'
+            ' `extract_as_markdown` tool. You can work with local file paths and URLs.'
+            ' Second, based on the ingested contents, you also generate a set of question-answer'
+            ' pairs (question bank) with different difficulty levels and save them in a database'
+            ' using the `create_question_bank` tool. You do not perform any other tasks.'
+            ' A user can ask to ingest data or create question banks or quizzes any number'
+            ' of times -- you must comply each time.'
+            ' If you do not know how to answer a question or what tool to use, use the'
+            ' `transfer_to_agent` tool to transfer the query to the `CoordinatorAgent`.'
         ),
         tools=[extract_as_markdown, create_question_bank],
     )
@@ -364,19 +409,26 @@ async def create_agents() -> Agent:
         name='QuizMasterAgent',
         model=llm,
         description=(
-            'Generates quizzes based on the question bank (database) and evaluates answers.'
+            'Generates quizzes based on the question bank (database), displays questions '
+            'to the user, and evaluates answers.'
         ),
         instruction=(
             'You are the quiz master agent. Your role is to create quizzes based on the'
-            ' question bank (existing database) already created by DataIngestionAgent. To generate'
-            ' a quiz, you select questions from the question bank based on difficulty levels and'
-            ' the number of items requested, if any (`create_quiz` tool). In addition, you'
-            ' also evaluate the answers provided by the user against the correct answers'
+            ' question bank (existing database) already created by `DataIngestionAgent`. To'
+            ' generate a quiz, you select questions from the question bank based on difficulty'
+            ' levels and the number of items requested, if any, using the `create_quiz` tool.'
+            ' After successfully creating a quiz, you **must** pass the list of questions '
+            ' generated by `create_quiz` to the `display_quiz` tool. This is how you "display" or'
+            ' "show" the quiz to the users.'
+            ' A user can ask to create quizzes or display them any number of times.'
+            ' You MUST comply each time by creating a new quiz or displaying the existing quiz.'
+            ' If you do not know how to answer a question or what tool to use, use the'
+            ' `transfer_to_agent` tool to transfer the query to the `CoordinatorAgent`.'
         ),
-        tools=[create_quiz, evaluate_answer],
+        tools=[create_quiz, display_quiz],
     )
     logging.info(
-        'Agent `%s` created using model `%s`', quizmaster_agent.name, {MODEL_GEMINI}
+        'Agent `%s` created using model `%s`', quizmaster_agent.name, MODEL_GEMINI
     )
 
     coordinator_agent = Agent(
@@ -389,8 +441,14 @@ async def create_agents() -> Agent:
             'You are the coordinator agent. You play a critical role in identifying which task'
             ' should be delegated to which agent reliably. If a query provides/relates to a data'
             ' source, either a file path or URL, you typically need to delegate to the'
-            ' DataIngestionAgent. On the other hand, if a query relates to creating or fetching'
-            ' a quiz, you should delegate to the QuizMasterAgent.'
+            ' `DataIngestionAgent`. If the user asks to generate a question bank, you should use'
+            ' the `extract_as_markdown` tool first to get the content from the provided URL or'
+            ' file path, and then pass that content to the `create_question_bank` tool.'
+            ' On the other hand, if a query relates to creating or fetching or displaying a quiz,'
+            ' you should delegate to the `QuizMasterAgent`. When delegating to QuizMasterAgent'
+            ' to create a quiz, ensure it uses the `create_quiz` tool and then the `display_quiz`'
+            ' tool. If the user asks for a new quiz or wants to restart, delegate to the'
+            ' `QuizMasterAgent` to call `create_quiz` again.'
         ),
         sub_agents=[ingestion_agent, quizmaster_agent],
     )
@@ -401,107 +459,240 @@ async def create_agents() -> Agent:
     return coordinator_agent
 
 
-async def call_agent_async(query: str, runner, user_id: str, session_id: str):
+# --- ADK Runner and Streamlit Chat Functions ---
+async def display_agent_response_in_chat(query: str, runner: Runner, user_id: str, session_id: str):
     """
-    Send a query to the agent and print the final response.
+    Send a query to the agent and display the response in Streamlit chat.
+    Also, handle special messages based on agent's output.
+    """
+    st.session_state.messages.append({'role': 'user', 'content': query})
+    with st.chat_message('user'):
+        st.markdown(query)
+
+    with st.chat_message('assistant'):
+        response_placeholder = st.empty()
+        full_response_text = ''
+        tool_code_displayed_for_turn = False
+
+        async for event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=types.Content(role='user', parts=[types.Part(text=query)])
+        ):
+            # Check for transfer to another agent
+            if event.actions and getattr(
+                    event.actions, 'transfer_to_agent', None
+            ) and not tool_code_displayed_for_turn:
+                transfer_info = event.actions.transfer_to_agent
+                st.info(f'Transferring to agent: {transfer_info}')
+                tool_code_displayed_for_turn = True
+                response_placeholder.empty()
+                full_response_text = ''
+
+            # Check for function call in event content
+            if event.content and event.content.parts:
+                part = event.content.parts[0]
+                print(f'{event.is_final_response()=}, {part.function_call=}, {part.function_response=}')
+                if getattr(part, 'function_call', None) and not tool_code_displayed_for_turn:
+                    func_call = part.function_call
+                    st.info(
+                        f'Calling function: `{func_call.name}` with arguments:\n'
+                        f'```json\n{json.dumps(func_call.args, indent=2)}\n```'
+                    )
+                    tool_code_displayed_for_turn = True
+                    response_placeholder.empty()
+                    full_response_text = ''
+
+                if getattr(part, 'function_response', None):
+                    func_response = part.function_response.response
+                    func_name = part.function_response.name
+
+                    if func_name == 'display_quiz':
+                        try:
+                            quiz_questions = [
+                                QuestionAnswer.model_validate(q) for q in func_response['result']
+                            ]
+                            if quiz_questions:
+                                print('-> Saved quiz in session')
+                                save_and_display_quiz_session(quiz_questions)
+                                # Rerun streamlit to display the quiz
+                                st.rerun()
+                            else:
+                                text = 'The agent attempted to display an empty quiz.'
+                                st.warning(text)
+                                full_response_text += text
+                        except Exception as e:
+                            st.error(f'Error parsing quiz questions from display_quiz tool: {e}')
+                            full_response_text += f'Error parsing quiz questions: {e}'
+
+            if event.content and event.content.parts:
+                part_text = event.content.parts[0].text
+                if part_text:
+                    full_response_text += part_text
+                response_placeholder.markdown(full_response_text + '▌')
+
+            if event.is_final_response():
+                print('Received final response...')
+                print(f'{event=}')
+                if event.error_message:
+                    print(f'Agent error: {event.error_message}')
+                    response_placeholder.error(f'Agent error: {event.error_message}')
+                    st.session_state.messages.append(
+                        {'role': 'assistant', 'content': f'Agent error: {event.error_message}'})
+
+                if full_response_text:
+                    st.session_state.messages.append(
+                        {'role': 'assistant', 'content': full_response_text})
+
+                response_placeholder.empty()
+                if full_response_text:
+                    st.markdown('✨ ' + full_response_text)
+                break
+
+
+def save_and_display_quiz_session(quiz_questions: Optional[list[QuestionAnswer]] = None):
+    """
+    Save the quiz questions in the session state of Streamlit and display a message in the chat.
 
     Args:
-        query: The user's query string.
-        runner: The Runner instance to execute the agent.
-        user_id: User identifier for the session.
-        session_id: Session identifier for the conversation.
+        quiz_questions: A list of QuestionAnswer objects representing the quiz questions.
     """
-    print(f'\n🔍 User Query: {query}')
-
-    content = types.Content(role='user', parts=[types.Part(text=query)])
-    final_response_text = 'Agent did not produce a final response.'
-
-    async for event in runner.run_async(
-            user_id=user_id,
-            session_id=session_id,
-            new_message=content
-    ):
-        print(
-            f'  🎉 Author: {event.author}, Type: {type(event).__name__},'
-            f' Final: {event.is_final_response()}, Content: {event.content}'
-        )
-
-        if event.is_final_response():
-            if event.content and event.content.parts:
-                final_response_text = event.content.parts[0].text
-            elif event.actions and event.actions.escalate:
-                final_response_text = (
-                    f"Agent escalated: {event.error_message or 'No specific message.'}"
-                )
-            break
-
-    print(f'🖺 Agent Response: {final_response_text}')
+    # Save quiz state in session
+    if quiz_questions:
+        st.session_state.current_quiz = quiz_questions
+        st.session_state.quiz_submitted = False
+        st.session_state.messages.append({
+            'role': 'assistant',
+            'content': f'Here is your quiz with {len(quiz_questions)} questions.'
+                       f' Please answer all questions below.'
+        })
 
 
-async def run_conversation():
-    """
-    Run a conversation with the agent, creating a session and executing the agent.
-    This function initializes the session, creates the agent, and runs the conversation loop.
-    """
-    # Session Management
-    session_service = InMemorySessionService()
-    user_id = 'default_user'
-    session_id = user_id
+st.title('QuizAlchemy')
+st.markdown('## *Transmute text into knowledge* 💎')
 
-    await session_service.create_session(
-        app_name=APP_NAME,
-        user_id=user_id,
-        session_id=session_id
-    )
-    print(f'ADK session created: {APP_NAME=}, {user_id=}, {session_id=}')
-
-    # Runner setup
-    runner = Runner(
-        agent=await create_agents(),
-        app_name=APP_NAME,
-        session_service=session_service
-    )
-    print(f'Runner created for agent `{runner.agent.name}`')
-
-    queries = [
-        f'Create Question Bank from {FILE_URL}',
-        'Create a quiz with 5 questions',
-    ]
-
-    for query in queries:
-        await call_agent_async(
-            query,
-            runner=runner,
-            user_id=user_id,
-            session_id=session_id
-        )
-
-
-# Set up DB connection in session state
 if 'db_conn' not in st.session_state:
     st.session_state.db_conn = create_db_tables()
 
-# Use the connection
-db_connection = st.session_state.db_conn
-db_cursor = db_connection.cursor()
-
-st.title("🏗️ Streamlit Session-Scoped SQLite Demo")
-
-# Show messages
-db_cursor.execute('SELECT * FROM questions')
-rows = db_cursor.fetchall()
-st.write("Messages from the database:")
-for row in rows:
-    st.write(f"{row[0]} says: {row[1]}")
-
-# # Allow user to add a message
-# new_msg = st.text_input("Add a message")
-# if st.button("Save message"):
-#     cur.execute("INSERT INTO messages VALUES (?, ?)", ("You", new_msg))
-#     conn.commit()
-#     st.experimental_rerun()
+if 'agent_runner' not in st.session_state:
+    st.session_state.session_service = InMemorySessionService()
+    st.session_state.user_id = 'streamlit_user'
+    st.session_state.session_id = st.session_state.user_id
+    st.session_state.agent_runner = None
+    st.session_state.question_bank = None
+    st.session_state.current_quiz = None
+    st.session_state.quiz_results = []
+    st.session_state.messages = []
 
 
-if __name__ == '__main__':
-    import asyncio
-    asyncio.run(run_conversation())
+@st.cache_resource
+def get_agent_runner():
+    """
+    Initialize the agent runner with the root agent and session service.
+    This function is cached to avoid re-initialization on every app rerun.
+
+    Returns:
+        Runner: An instance of the Runner class with the root agent and session service.
+    """
+    session_service = InMemorySessionService()
+    user_id = 'streamlit_user'
+    session_id = user_id
+    # Use asyncio.run for the initial async setup in a synchronous Streamlit context
+    asyncio.run(session_service.create_session(
+        app_name=APP_NAME,
+        user_id=user_id,
+        session_id=session_id
+    ))
+    agent = asyncio.run(create_agents())
+    return Runner(
+        agent=agent,
+        app_name=APP_NAME,
+        session_service=session_service
+    )
+
+
+st.session_state.agent_runner = get_agent_runner()
+
+st.markdown(
+    """
+    You can chat with QuizAlchemy to:
+    - **Generate a question bank**: Provide a URL
+      (e.g., `Generate question bank from https://example.com/doc.pdf`).
+    - **Create a quiz**: Ask `Create a quiz with 5 questions`. 
+      The quiz will then appear below the chat.
+    - **Transfer/escalate**: Sometimes the agents might fail to do what asked. You can type
+      `coordinator` to transfer the query to the `CoordinatorAgent`.
+
+    Example: `Create a quiz from 
+    https://web.stanford.edu/class/cs102/lectureslides/ClassificationSlides.pdf` and display it
+    """
+)
+
+# Display chat messages from history on app rerun
+for message in st.session_state.messages:
+    with st.chat_message(message['role']):
+        st.markdown(message['content'])
+
+# Display quiz questions if a quiz is active
+_active_quiz = st.session_state.current_quiz
+_quiz_results = st.session_state.get('quiz_results', [])
+
+# Placeholders to display feedback for each question later
+feedback_placeholders = []
+
+if _active_quiz and not st.session_state.quiz_submitted:
+    st.divider()
+    user_answers = []
+    for _idx, _question in enumerate(_active_quiz):
+        st.subheader(f'Question {_idx + 1}/{len(_active_quiz)}')
+        st.markdown(f'**{_question.question}**')
+        selected = st.radio(
+            'Select your answer:',
+            options=_question.choices,
+            key=f'quiz_q{_idx}',
+        )
+        # Create a placeholder for feedback
+        feedback_placeholder = st.empty()
+        feedback_placeholders.append(feedback_placeholder)
+        user_answers.append(selected)
+
+    st.session_state.user_answers = user_answers
+    st.divider()
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button('Submit Answer'):
+            results = evaluate_quiz()
+            # Display feedback for each question after evaluation
+            for _idx, (_is_correct, feedback) in enumerate(st.session_state.quiz_results):
+                if _is_correct:
+                    feedback_placeholders[_idx].success('That is correct! 🎉')
+                else:
+                    feedback_placeholders[_idx].error(feedback)
+            st.session_state.quiz_submitted = True
+    with col2:
+        if st.button('New Quiz'):
+            # Clear existing quiz state and ask the agent to create a new one
+            st.session_state.current_quiz = None
+            st.session_state.quiz_submitted = False
+            # Send a direct query to the agent to create a new quiz
+            asyncio.run(display_agent_response_in_chat(
+                'Create & display a new quiz with 5 questions.',
+                st.session_state.agent_runner,
+                st.session_state.user_id,
+                st.session_state.session_id
+            ))
+
+
+# Accept user input via chat_input
+if prompt := st.chat_input(
+        'Type your command here (e.g., "Create & show a quiz from URL")'
+):
+    print(f'{prompt=}')
+    with st.spinner('Processing your request...'):
+        asyncio.run(display_agent_response_in_chat(
+            prompt,
+            st.session_state.agent_runner,
+            st.session_state.user_id,
+            st.session_state.session_id
+        ))
