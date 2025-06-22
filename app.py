@@ -9,6 +9,7 @@ import mimetypes
 import random
 import re
 import sqlite3
+import uuid
 import warnings
 import asyncio
 from typing import Optional
@@ -63,6 +64,9 @@ logging.basicConfig(level=logging.ERROR)
 warnings.filterwarnings('ignore')
 
 llm = LiteLlm(model=MODEL_GEMINI)
+
+st.title('QuizAlchemy')
+st.markdown('## *Transmute text into knowledge* 💎')
 
 
 class QuestionAnswer(BaseModel):
@@ -398,7 +402,8 @@ async def create_agents() -> Agent:
             ' pairs (question bank) with different difficulty levels and save them in a database'
             ' using the `create_question_bank` tool. You do not perform any other tasks.'
             ' A user can ask to ingest data or create question banks or quizzes any number'
-            ' of times -- you must comply each time.'
+            ' of times -- you must comply each time. To create or display a quiz, you must'
+            ' transfer the query to the `QuizMasterAgent`.'
             ' If you do not know how to answer a question or what tool to use, use the'
             ' `transfer_to_agent` tool to transfer the query to the `CoordinatorAgent`.'
         ),
@@ -461,7 +466,6 @@ async def create_agents() -> Agent:
     return coordinator_agent
 
 
-# --- ADK Runner and Streamlit Chat Functions ---
 async def display_agent_response_in_chat(query: str, runner: Runner, user_id: str, session_id: str):
     """
     Send a query to the agent and display the response in Streamlit chat.
@@ -494,7 +498,6 @@ async def display_agent_response_in_chat(query: str, runner: Runner, user_id: st
             # Check for function call in event content
             if event.content and event.content.parts:
                 part = event.content.parts[0]
-                print(f'{event.is_final_response()=}, {part.function_call=}, {part.function_response=}')
                 if getattr(part, 'function_call', None) and not tool_code_displayed_for_turn:
                     func_call = part.function_call
                     st.info(
@@ -566,12 +569,8 @@ def save_and_display_quiz_session(quiz_questions: Optional[list[QuestionAnswer]]
         st.session_state.messages.append({
             'role': 'assistant',
             'content': f'Here is your quiz with {len(quiz_questions)} questions.'
-                       f' Please answer all questions below.'
         })
 
-
-st.title('QuizAlchemy')
-st.markdown('## *Transmute text into knowledge* 💎')
 
 if 'db_conn' not in st.session_state:
     st.session_state.db_conn = create_db_tables()
@@ -579,7 +578,7 @@ if 'db_conn' not in st.session_state:
 if 'agent_runner' not in st.session_state:
     st.session_state.session_service = InMemorySessionService()
     st.session_state.user_id = 'streamlit_user'
-    st.session_state.session_id = st.session_state.user_id
+    st.session_state.session_id = str(uuid.uuid4())
     st.session_state.agent_runner = None
     st.session_state.question_bank = None
     st.session_state.current_quiz = None
@@ -588,17 +587,19 @@ if 'agent_runner' not in st.session_state:
 
 
 @st.cache_resource
-def get_agent_runner():
+def get_agent_runner(session_id: str):
     """
     Initialize the agent runner with the root agent and session service.
     This function is cached to avoid re-initialization on every app rerun.
+
+    Args:
+        session_id: A unique identifier for the session, used to manage state.
 
     Returns:
         Runner: An instance of the Runner class with the root agent and session service.
     """
     session_service = InMemorySessionService()
     user_id = 'streamlit_user'
-    session_id = user_id
     # Use asyncio.run for the initial async setup in a synchronous Streamlit context
     asyncio.run(session_service.create_session(
         app_name=APP_NAME,
@@ -613,7 +614,7 @@ def get_agent_runner():
     )
 
 
-st.session_state.agent_runner = get_agent_runner()
+st.session_state.agent_runner = get_agent_runner(st.session_state.session_id)
 
 st.markdown(
     """
