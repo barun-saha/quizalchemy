@@ -4,7 +4,7 @@ QuizAlchemy is a quiz generation application that leverages Google's [Agent Deve
 
 
 ## Architecture
-![QuizAlchemy Architecture](https://raw.githubusercontent.com/barun-saha/quizalchemy/main/assets/quizalchemy_arch.png)
+![QuizAlchemy Architecture](https://github.com/barun-saha/quizalchemy/blob/main/assets/quizalchemy_arch.png?raw=true)
 
 
 ## Features
