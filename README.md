@@ -3,10 +3,14 @@
 QuizAlchemy is a quiz generation application that leverages Google's [Agent Development Kit (ADK)](https://google.github.io/adk-docs/) and Streamlit to create quizzes from any file or text. It allows users to input text or upload files (PDF, DOCX, XLSX, HTML), which are then transformed into a structured quiz format with multiple-choice questions of varying difficulty.
 
 
+## Architecture
+![QuizAlchemy Architecture](https://raw.githubusercontent.com/barun-saha/quizalchemy/main/assets/quizalchemy_arch.png)
+
+
 ## Features
 
 QuizAlchemy can:
-- Extract content from web URLs or uploaded files (PDF, DOCX, XLSX, HTML)
+- Extract content from web URLs or uploaded files (PDF, DOCX, HTML)
 - Generate a question bank using Google Gemini models via ADK
 - Store questions in an SQLite database
 - Create quizzes with a customizable mix of question difficulties (easy, medium, hard)
@@ -47,6 +51,7 @@ It uses three ADK agents:
 
 - Built with [Streamlit](https://streamlit.io/), [Google ADK](https://google.github.io/adk-docs/), and [Gemini](https://ai.google.dev/gemini-api/docs)
 - Uses [MarkItDown](https://github.com/microsoft/markitdown/) for file content extraction
+- Supported by GitHub Copilot and Gemini for development assistance
 
 
 ## License
