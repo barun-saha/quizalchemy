@@ -3,27 +3,32 @@ QuizAlchemy: Transmute text into knowledge
 
 A quiz generation application using Google ADK and Streamlit.
 """
+import io
 import json
 import logging
 import mimetypes
+import os
 import random
 import re
 import sqlite3
+import tempfile
 import uuid
 import warnings
 import asyncio
 from typing import Optional
 
 import litellm
+import markdown
 import streamlit as st
-from markitdown import MarkItDown
-from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
 from google.genai import types
+from markitdown import MarkItDown
+from pydantic import BaseModel, Field
+from xhtml2pdf import pisa
 
 
 FILE_URL = 'https://web.stanford.edu/class/cs102/lectureslides/ClassificationSlides.pdf'
@@ -60,7 +65,7 @@ An illustrative example:
 
 
 load_dotenv()
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 warnings.filterwarnings('ignore')
 
 llm = LiteLlm(model=MODEL_GEMINI)
@@ -120,7 +125,7 @@ class QuestionBank(BaseModel):
                 question.to_sql_tuple()
             )
         connection.commit()
-        print(f'Saved {len(self.questions)} questions to DB.')
+        logging.debug('Saved %d questions to DB.', len(self.questions))
 
     @classmethod
     def load_from_db(cls, connection: sqlite3.Connection):
@@ -132,7 +137,7 @@ class QuestionBank(BaseModel):
             return None
 
         questions = [QuestionAnswer.from_sql_row(row) for row in rows]
-        print(f'Loaded {len(questions)} questions from DB.')
+        logging.debug('Loaded %d questions from DB.', len(questions))
         return cls(questions=questions)
 
     def filter_by_difficulty(self, difficulty: str) -> list[QuestionAnswer]:
@@ -174,7 +179,7 @@ def extract_as_markdown(
     Returns:
         The content of the file in Markdown format.
     """
-    print('🛠 extract_as_markdown() called')
+    logging.debug('🛠 extract_as_markdown() called')
     md = MarkItDown(enable_plugins=False)
 
     try:
@@ -213,10 +218,10 @@ async def create_question_bank(text: str) -> QuestionBank:
     Returns:
         A QuestionBank object containing a list of questions.
     """
-    print('🛠 create_question_bank() called')
+    logging.debug('🛠 create_question_bank() called')
 
     if not text or len(text.strip()) < 50:  # Basic check for meaningful text
-        print('CRITICAL ERROR: Input text to create_question_bank is empty or too short.')
+        logging.error('Input text to `create_question_bank` is empty or too short.')
         return QuestionBank(questions=[])
 
     response = await litellm.acompletion(
@@ -226,14 +231,14 @@ async def create_question_bank(text: str) -> QuestionBank:
     )
     response = response.choices[0].message.content
     qbank: QuestionBank = QuestionBank.model_validate_json(response)
-    print(f'Number of questions from LLM Output: {len(qbank.questions)}')
+    logging.debug('Number of questions from LLM Output: %d', len(qbank.questions))
 
     # Database interaction with raw SQLite3
     connection = get_db_connection()
     try:
         qbank.save_to_db(connection)  # Use the Pydantic model's save_to_db method
     except Exception as db_error:
-        print(f'ERROR: Database save failed: {db_error}')
+        logging.error(f'Database save failed: %s', str(db_error))
         raise
 
     return qbank
@@ -259,23 +264,21 @@ def create_quiz(
     Returns:
         A list of selected questions for the quiz.
     """
-    print('🛠 create_quiz() called')
+    logging.info('🛠 create_quiz() called')
 
     qbank = QuestionBank.load_from_db(get_db_connection())
     if not qbank or not qbank.questions:
-        print('No question bank found or it contains no questions!')
+        logging.warning('No question bank found or it contains no questions!')
         return []
 
     easy_questions = qbank.filter_by_difficulty(DIFFICULTY_LEVELS[0])
     medium_questions = qbank.filter_by_difficulty(DIFFICULTY_LEVELS[1])
     hard_questions = qbank.filter_by_difficulty(DIFFICULTY_LEVELS[2])
-    print(f'{len(easy_questions)=}, {len(medium_questions)=}, {len(hard_questions)=}')
 
     # Determine the number of questions per difficulty
     num_easy = int(num_items * easy)
     num_medium = int(num_items * medium)
     num_hard = num_items - num_easy - num_medium
-    print(f'{num_easy=}, {num_medium=}, {num_hard=}')
 
     # Randomly select questions while handling cases where there aren't enough
     easy_questions = random.sample(easy_questions, min(num_easy, len(easy_questions)))
@@ -286,8 +289,45 @@ def create_quiz(
     quiz_questions = easy_questions + medium_questions + hard_questions
     random.shuffle(quiz_questions)
 
-    print(f'Generated quiz with {len(quiz_questions)} questions')
+    logging.debug('Generated quiz with %d questions', len(quiz_questions))
     return quiz_questions
+
+
+def print_quiz_as_pdf():
+    """
+    Print (save) the current quiz questions in PDF format. The PDF file can be downloaded.
+    """
+    quiz = st.session_state.get('current_quiz', [])
+    if not quiz:
+        st.info('No quiz available to print. Please create a quiz first.')
+
+    # Format quiz as Markdown
+    md_lines = ['# QuizAlchemy Quiz\n', '\n\nSelect the correct answer for each question:\n\n']
+    for idx, question in enumerate(quiz, 1):
+        md_lines.append(f'\n**Q{idx}: {question.question}**\n')
+        for cidx, choice in enumerate(question.choices):
+            md_lines.append(f'🔘 {chr(65 + cidx)}. {choice}\n')
+        md_lines.append('')
+
+    md_content = '\n'.join(md_lines)
+    html_content = markdown.markdown(md_content)
+
+    with tempfile.NamedTemporaryFile(
+            delete=False, suffix='.pdf', prefix='quiz_', mode='wb'
+    ) as tmpfile:
+        pisa_status = pisa.CreatePDF(io.StringIO(html_content), dest=tmpfile)
+        if pisa_status.err:
+            st.error(f'Error printing quiz: {pisa_status.err}')
+        else:
+            st.success('Quiz printed successfully!')
+            print(tmpfile.name)
+            tmpfile.seek(0)
+            st.download_button(
+                label='Download Quiz PDF',
+                data=open(tmpfile.name, 'rb').read(),
+                file_name='quiz.pdf',
+                mime='application/pdf'
+            )
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -317,9 +357,9 @@ def create_db_tables() -> sqlite3.Connection | None:
             )
         ''')
         connection.commit()
-        print('Database tables created successfully.')
+        logging.info('Database tables created successfully.')
     except sqlite3.Error as e:
-        print(f'Error creating database tables: {e}')
+        logging.error('Error creating database tables: %s', str(e))
 
     return connection
 
@@ -372,9 +412,9 @@ def display_quiz(quiz_questions: list[QuestionAnswer]) -> list[QuestionAnswer]:
         The same list of QuestionAnswer objects, which the Streamlit app will
         then use to render the interactive quiz.
     """
-    print('🛠 display_quiz() called')
+    logging.debug('🛠 display_quiz() called')
     if not quiz_questions:
-        print('No questions provided to display_quiz tool.')
+        logging.warning('No questions provided to `display_quiz tool`.')
 
     return quiz_questions
 
@@ -518,7 +558,7 @@ async def display_agent_response_in_chat(query: str, runner: Runner, user_id: st
                                 QuestionAnswer.model_validate(q) for q in func_response['result']
                             ]
                             if quiz_questions:
-                                print('-> Saved quiz in session')
+                                logging.debug('-> Saved quiz in session')
                                 save_and_display_quiz_session(quiz_questions)
                                 # Rerun streamlit to display the quiz
                                 st.rerun()
@@ -537,10 +577,9 @@ async def display_agent_response_in_chat(query: str, runner: Runner, user_id: st
                 response_placeholder.markdown(full_response_text + '▌')
 
             if event.is_final_response():
-                print('Received final response...')
-                print(f'{event=}')
+                logging.info('Received final response...')
                 if event.error_message:
-                    print(f'Agent error: {event.error_message}')
+                    logging.error('Agent error: %s', str(event.error_message))
                     response_placeholder.error(f'Agent error: {event.error_message}')
                     st.session_state.messages.append(
                         {'role': 'assistant', 'content': f'Agent error: {event.error_message}'})
@@ -624,7 +663,7 @@ st.markdown(
     - **Create a quiz**: Ask `Create a quiz with 5 questions`. 
       The quiz will then appear below the chat.
     - **Transfer/escalate**: Sometimes the agents might fail to do what asked. You can type
-      `coordinator` to transfer the query to the `CoordinatorAgent`.
+      `coordinator` or `transfer to coordinator` to transfer the query to the `CoordinatorAgent`.
 
     Example: `Create a quiz from 
     https://web.stanford.edu/class/cs102/lectureslides/ClassificationSlides.pdf` and display it
@@ -662,7 +701,7 @@ if _active_quiz and not st.session_state.quiz_submitted:
     st.session_state.user_answers = user_answers
     st.divider()
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         if st.button('Submit Answer'):
             results = evaluate_quiz()
@@ -685,13 +724,16 @@ if _active_quiz and not st.session_state.quiz_submitted:
                 st.session_state.user_id,
                 st.session_state.session_id
             ))
+    with col3:
+        if st.button('Print Quiz'):
+            # Print the current quiz as a PDF
+            print_quiz_as_pdf()
 
 
 # Accept user input via chat_input
 if prompt := st.chat_input(
         'Type your command here (e.g., "Create & show a quiz from URL")'
 ):
-    print(f'{prompt=}')
     with st.spinner('Processing your request...'):
         asyncio.run(display_agent_response_in_chat(
             prompt,

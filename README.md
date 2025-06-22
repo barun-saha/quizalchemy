@@ -1,6 +1,6 @@
 # QuizAlchemy: Transmute text into knowledge 💎
 
-QuizAlchemy is a quiz generation application that leverages Google's [Agent Development Kit (ADK)](https://google.github.io/adk-docs/) and Streamlit to create quizzes from any file or text. It allows users to input text or upload files (PDF, DOCX, XLSX, HTML), which are then transformed into a structured quiz format with multiple-choice questions of varying difficulty.
+QuizAlchemy is a quiz generation application that leverages Google's [Agent Development Kit (ADK)](https://google.github.io/adk-docs/) and Streamlit to create quizzes from any file or text. It allows users to input text or upload files, which are then transformed into a structured quiz format with multiple-choice questions of varying difficulty.
 
 
 ## Architecture
