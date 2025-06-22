@@ -245,6 +245,7 @@ def create_quiz(
     The `easy` and `medium` parameters determine the proportions of easy and medium questions.
     Default values are used unless otherwise specified.
     The proportions of hard questions will be `1 - easy - medium`.
+    IMPORTANT: This tool can be called as many times as needed (asked by the user)!
 
     Args:
         num_items: The number of questions to include in the quiz.
@@ -422,6 +423,7 @@ async def create_agents() -> Agent:
             ' "show" the quiz to the users.'
             ' A user can ask to create quizzes or display them any number of times.'
             ' You MUST comply each time by creating a new quiz or displaying the existing quiz.'
+            ' You can use the tools `create_quiz` and `display_quiz` as many times as needed.'
             ' If you do not know how to answer a question or what tool to use, use the'
             ' `transfer_to_agent` tool to transfer the query to the `CoordinatorAgent`.'
         ),
@@ -677,7 +679,7 @@ if _active_quiz and not st.session_state.quiz_submitted:
             st.session_state.quiz_submitted = False
             # Send a direct query to the agent to create a new quiz
             asyncio.run(display_agent_response_in_chat(
-                'Create & display a new quiz with 5 questions.',
+                'Create a new quiz with 5 questions & display the quiz.',
                 st.session_state.agent_runner,
                 st.session_state.user_id,
                 st.session_state.session_id
